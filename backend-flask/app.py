@@ -35,13 +35,6 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app, resources={
-    r"/report/*": {
-        "origins": ["http://localhost:5173", "https://career-catalyst-six.vercel.app"],
-        "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type"],
-        "expose_headers": ["X-Report-FilePath"],
-        "supports_credentials": True
-    },
     r"/upload_resume": {
         "origins": ["http://localhost:5173", "https://career-catalyst-six.vercel.app"],
         "methods": ["POST", "OPTIONS"],
@@ -61,10 +54,20 @@ CORS(app, resources={
         "supports_credentials": True
     }
 })
+
 analyzer = AIResumeAnalyzer()
 matcher = ResumeJobMatcher()
 
 report_bp = Blueprint('report', __name__, url_prefix='/report')
+CORS(report_bp, resources={
+    r"/generate-report": {
+        "origins": ["http://localhost:5173", "https://career-catalyst-six.vercel.app"],
+        "methods": ["POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"],
+        "expose_headers": ["X-Report-FilePath"],
+        "supports_credentials": True
+    }
+})
 
 def extract_pdf_text_and_links(pdf_file):
     logger.debug("Starting PDF text and hyperlink extraction")
@@ -162,7 +165,7 @@ def compute_github_rating(github_data):
     total_prs = summary.get("total_pull_requests", 0)
     max_commits, max_repos, max_workflows, max_prs = 50, 20, 100, 10
     norm_commits = min(safe_log(total_commits, max_commits + 1) / safe_log(max_commits, max_commits + 1) * 10, 10)
-    norm_repos = min(safe_log(total_repos, max_repos + 1) / safe_log(max_repos, max_repos + 1) * 10, 10)
+    norm_repos = min(safe_og(total_repos, max_repos + 1) / safe_log(max_repos, max_repos + 1) * 10, 10)
     norm_workflows = min(safe_log(total_workflows, max_workflows + 1) / safe_log(max_workflows, max_workflows + 1) * 10, 10)
     norm_prs = min(safe_log(total_prs, max_prs + 1) / safe_log(max_prs, max_prs + 1) * 10, 10)
     return min((norm_commits * 0.35 + norm_repos * 0.25 + norm_workflows * 0.2 + norm_prs * 0.2), 10)
@@ -227,8 +230,17 @@ def section_header(pdf, title):
     pdf.cell(0, 10, title, ln=1, fill=True, align="C")
     pdf.ln(3)
 
-@report_bp.route('/generate-report', methods=['POST'])
+@report_bp.route('/generate-report', methods=['POST', 'OPTIONS'])
 def generate_report():
+    if request.method == 'OPTIONS':
+        logger.debug("Handling OPTIONS request for /report/generate-report")
+        response = jsonify({"status": "OK"})
+        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        response.headers['Access-Control-Expose-Headers'] = 'X-Report-FilePath'
+        return response, 200
+
     data = request.get_json()
     logger.debug(f"Received request data: {data}")
     resume_file_path = data.get('resumeFilePath')
