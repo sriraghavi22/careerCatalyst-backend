@@ -34,23 +34,13 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+# Apply CORS globally to all routes
 CORS(app, resources={
-    r"/upload_resume": {
+    r"/*": {
         "origins": ["http://localhost:5173", "https://career-catalyst-six.vercel.app"],
-        "methods": ["POST", "OPTIONS"],
+        "methods": ["GET", "POST", "OPTIONS"],
         "allow_headers": ["Content-Type"],
-        "supports_credentials": True
-    },
-    r"/recommend-jobs": {
-        "origins": ["http://localhost:5173", "https://career-catalyst-six.vercel.app"],
-        "methods": ["POST", "OPTIONS"],
-        "allow_headers": ["Content-Type"],
-        "supports_credentials": True
-    },
-    r"/match_resume_job": {
-        "origins": ["http://localhost:5173", "https://career-catalyst-six.vercel.app"],
-        "methods": ["POST", "OPTIONS"],
-        "allow_headers": ["Content-Type"],
+        "expose_headers": ["X-Report-FilePath"],
         "supports_credentials": True
     }
 })
@@ -59,15 +49,6 @@ analyzer = AIResumeAnalyzer()
 matcher = ResumeJobMatcher()
 
 report_bp = Blueprint('report', __name__, url_prefix='/report')
-CORS(report_bp, resources={
-    r"/generate-report": {
-        "origins": ["http://localhost:5173", "https://career-catalyst-six.vercel.app"],
-        "methods": ["POST", "OPTIONS"],
-        "allow_headers": ["Content-Type"],
-        "expose_headers": ["X-Report-FilePath"],
-        "supports_credentials": True
-    }
-})
 
 def extract_pdf_text_and_links(pdf_file):
     logger.debug("Starting PDF text and hyperlink extraction")
@@ -165,7 +146,7 @@ def compute_github_rating(github_data):
     total_prs = summary.get("total_pull_requests", 0)
     max_commits, max_repos, max_workflows, max_prs = 50, 20, 100, 10
     norm_commits = min(safe_log(total_commits, max_commits + 1) / safe_log(max_commits, max_commits + 1) * 10, 10)
-    norm_repos = min(safe_og(total_repos, max_repos + 1) / safe_log(max_repos, max_repos + 1) * 10, 10)
+    norm_repos = min(safe_log(total_repos, max_repos + 1) / safe_log(max_repos, max_repos + 1) * 10, 10)
     norm_workflows = min(safe_log(total_workflows, max_workflows + 1) / safe_log(max_workflows, max_workflows + 1) * 10, 10)
     norm_prs = min(safe_log(total_prs, max_prs + 1) / safe_log(max_prs, max_prs + 1) * 10, 10)
     return min((norm_commits * 0.35 + norm_repos * 0.25 + norm_workflows * 0.2 + norm_prs * 0.2), 10)
@@ -230,19 +211,11 @@ def section_header(pdf, title):
     pdf.cell(0, 10, title, ln=1, fill=True, align="C")
     pdf.ln(3)
 
-@report_bp.route('/generate-report', methods=['POST', 'OPTIONS'])
+@report_bp.route('/generate-report', methods=['POST'])
 def generate_report():
-    if request.method == 'OPTIONS':
-        logger.debug("Handling OPTIONS request for /report/generate-report")
-        response = jsonify({"status": "OK"})
-        response.headers['Access-Control-Allow-Origin'] = request.headers.get('Origin', '*')
-        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
-        response.headers['Access-Control-Expose-Headers'] = 'X-Report-FilePath'
-        return response, 200
-
+    logger.debug(f"Received request for /report/generate-report: {request.method} {request.headers.get('Origin')}")
     data = request.get_json()
-    logger.debug(f"Received request data: {data}")
+    logger.debug(f"Request data: {data}")
     resume_file_path = data.get('resumeFilePath')
     min_salary = data.get('min_salary')
     max_salary = data.get('max_salary')
@@ -397,7 +370,6 @@ def upload_resume():
     logger.debug(f"Uploading resume: {file.filename}, job_category: {job_category}, job_role: {job_role}")
 
     try:
-        # Read file content for direct processing
         file_content = file.read()
         result = upload(
             file_content,
@@ -410,9 +382,8 @@ def upload_resume():
         file_url = result['secure_url']
         public_id = result.get('public_id')
         access_mode = result.get('access_mode', 'unknown')
-        logger.debug(f"Resume uploaded to Cloudinary: {file_url}, public_id: {public_id}, access_mode: {access_mode}, full_response: {result}")
+        logger.debug(f"Resume uploaded to Cloudinary: {file_url}, public_id: {public_id}, access_mode: {access_mode}")
 
-        # Explicitly set access_mode to public
         if access_mode != 'public':
             logger.warning(f"Uploaded file {public_id} has access_mode: {access_mode}. Updating to public.")
             try:
@@ -434,7 +405,6 @@ def upload_resume():
         return jsonify({"error": "Failed to upload resume to Cloudinary", "details": str(e)}), 500
 
     try:
-        # Use uploaded file content directly
         resume_text = analyzer.extract_text_from_pdf(BytesIO(file_content))
         if not resume_text:
             logger.error("Failed to extract text from PDF")
@@ -492,7 +462,7 @@ def match_resume_job():
         logger.error(f"Error in match_resume_job: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-app.register_blueprint(report_bp, url_prefix='/report')
+app.register_blueprint(report_bp)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5001))
