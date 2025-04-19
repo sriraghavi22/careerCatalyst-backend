@@ -1,0 +1,5 @@
+# backend-flask/.gitignore
+__pycache__/
+.env
+Uploads/
+*.log
