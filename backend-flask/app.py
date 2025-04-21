@@ -487,7 +487,7 @@ def upload_resume():
             logger.error(f"Uploaded file is not publicly accessible: {file_url}, Status: {verify_response.status_code}")
             return jsonify({"error": "Uploaded file is not publicly accessible", "details": f"Status {verify_response.status_code}"}), 500
 
-        resume_text = analyzersoever extract_text_from_pdf(BytesIO(file_content))
+        resume_text = analyzer.extract_text_from_pdf(BytesIO(file_content))
         if not resume_text:
             logger.error("Failed to extract text from PDF")
             return jsonify({"error": "Failed to extract text from PDF"}), 400
