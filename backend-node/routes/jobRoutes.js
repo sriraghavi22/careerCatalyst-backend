@@ -68,7 +68,7 @@ router.get('/api/jobs/:id/matches', authMiddleware, async (req, res) => {
     // Call Flask server for match scores
     const matches = await Promise.all(students.map(async (student) => {
       try {
-        const flaskResponse = await axios.post('http://localhost:5001/match_resume_job', {
+        const flaskResponse = await axios.post('https://careercatalyst-flask.onrender.com/match_resume_job', {
           resumeFilePath: student.resumeFilePath,
           jobDescription: job.description,
           jobRole: job.title
