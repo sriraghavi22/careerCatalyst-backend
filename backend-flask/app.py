@@ -512,7 +512,7 @@ def upload_resume():
         )
         file_url = result['secure_url']
         public_id = result.get('public_id')
-        access_mode = result.get('public_id', 'unknown')
+        access_mode = result.get('access_mode', 'unknown')
         logger.debug(f"Resume uploaded to Cloudinary: {file_url}, public_id: {public_id}, access_mode: {access_mode}")
 
         if access_mode != 'public':
@@ -579,19 +579,54 @@ def match_resume_job():
         return jsonify({"error": "jobDescription is required"}), 400
 
     try:
-        resume_response = requests.get(resume_file_path)
+        # Fetch resume from Cloudinary
+        logger.debug(f"Fetching resume from: {resume_file_path}")
+        resume_response = requests.get(resume_file_path, timeout=10)
         if resume_response.status_code != 200:
-            logger.error(f"Failed to fetch resume from {resume_file_path}")
-            return jsonify({"error": "Failed to fetch resume"}), 400
+            logger.error(f"Failed to fetch resume from {resume_file_path}: Status {resume_response.status_code}")
+            return jsonify({"error": "Failed to fetch resume", "details": f"Status {resume_response.status_code}"}), 400
 
-        match_result = matcher.match_resume_to_job(BytesIO(resume_response.content), job_description, job_role)
+        # Save PDF content to a temporary file
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+            temp_file.write(resume_response.content)
+            temp_file_path = temp_file.name
+            logger.debug(f"Temporary PDF saved at {temp_file_path}, size: {os.path.getsize(temp_file_path)} bytes")
 
-        if "error" in match_result:
-            logger.error(f"Matching failed: {match_result['error']}")
-            return jsonify({"error": match_result['error']}), 400
+        try:
+            # Try matching with the temporary file path
+            match_result = matcher.match_resume_to_job(temp_file_path, job_description, job_role)
 
-        logger.debug(f"Match result: {match_result}")
-        return jsonify(match_result)
+            if "error" in match_result:
+                logger.error(f"Matching failed: {match_result['error']}")
+                return jsonify({"error": match_result['error']}), 400
+
+            logger.debug(f"Match result: {match_result}")
+            return jsonify(match_result)
+
+        except Exception as e:
+            logger.warning(f"Matching with file path failed: {str(e)}. Falling back to BytesIO method.")
+            # Fallback to original BytesIO method
+            match_result = matcher.match_resume_to_job(BytesIO(resume_response.content), job_description, job_role)
+
+            if "error" in match_result:
+                logger.error(f"Matching failed: {match_result['error']}")
+                # Try extracting text with existing method as a last resort
+                resume_text = extract_pdf_text_and_links(BytesIO(resume_response.content))
+                if not resume_text:
+                    logger.error("Fallback text extraction failed")
+                    return jsonify({"error": "Failed to extract text from resume using fallback method"}), 400
+                # If text is extracted, you may need to modify ResumeJobMatcher to accept text directly
+                return jsonify({"error": "Text extracted but matching not implemented for raw text", "extracted_text": resume_text[:500]})
+
+            logger.debug(f"Fallback match result: {match_result}")
+            return jsonify(match_result)
+
+        finally:
+            # Clean up the temporary file
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+                logger.debug(f"Cleaned up temporary file: {temp_file_path}")
+
     except Exception as e:
         logger.error(f"Error in match_resume_job: {str(e)}")
         return jsonify({"error": str(e)}), 500
