@@ -16,8 +16,10 @@ import uuid
 from dotenv import load_dotenv
 from cloudinary.uploader import upload
 from cloudinary import config, api
+from cloudinary.utils import cloudinary_url
 from io import BytesIO
 import time
+import tempfile
 
 load_dotenv()
 
@@ -34,7 +36,6 @@ logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-# Apply CORS globally to all routes
 CORS(app, resources={
     r"/*": {
         "origins": ["http://localhost:5173", "https://career-catalyst-six.vercel.app"],
@@ -91,16 +92,85 @@ def github_api_request(endpoint, token, params=None):
     base_url = "https://api.github.com"
     headers = {"Authorization": f"Bearer {token}", "User-Agent": "Mozilla/5.0"}
     response = requests.get(f"{base_url}{endpoint}", headers=headers, params=params)
+    remaining = response.headers.get("X-RateLimit-Remaining")
+    logger.debug(f"Rate limit remaining: {remaining}")
     if response.status_code == 403:
         raise Exception("Rate limit exceeded or insufficient permissions.")
     if response.status_code != 200:
         raise Exception(f"API request failed with status {response.status_code}: {response.text}")
     return response.json()
 
+def fetch_commit_count(username, repo_name, token):
+    commit_count = 0
+    page = 1
+    while True:
+        try:
+            commits = github_api_request(
+                f"/repos/{username}/{repo_name}/commits",
+                token,
+                params={"per_page": 100, "page": page}
+            )
+            commit_count += len(commits)
+            if len(commits) < 100:  # No more commits to fetch
+                break
+            page += 1
+            time.sleep(0.1)  # Avoid hitting rate limits
+        except Exception as e:
+            logger.error(f"Error fetching commits for repo {repo_name}: {e}")
+            break
+    return commit_count
+
+def fetch_pull_request_count(username, repo_name, token):
+    pull_request_count = 0
+    page = 1
+    while True:
+        try:
+            pulls = github_api_request(
+                f"/repos/{username}/{repo_name}/pulls",
+                token,
+                params={"state": "all", "per_page": 100, "page": page}
+            )
+            pull_request_count += len(pulls)
+            if len(pulls) < 100:  # No more pull requests to fetch
+                break
+            page += 1
+            time.sleep(0.1)
+        except Exception as e:
+            logger.error(f"Error fetching pull requests for repo {repo_name}: {e}")
+            break
+    return pull_request_count
+
+def fetch_workflow_count(username, repo_name, token):
+    try:
+        workflows = github_api_request(
+            f"/repos/{username}/{repo_name}/actions/workflows",
+            token,
+            params={"per_page": 100}
+        )
+        return workflows.get("total_count", 0)
+    except Exception as e:
+        logger.error(f"Error fetching workflows for repo {repo_name}: {e}")
+        return 0
+
 def fetch_user_repositories(username, token):
     logger.debug(f"Fetching repositories for username: {username}")
     repos_data = github_api_request(f"/users/{username}/repos", token, params={"per_page": 100})
-    return [{"Name": repo["name"], "Language": repo["language"], "Languages URL": repo["languages_url"]} for repo in repos_data]
+    repositories = []
+    for repo in repos_data:
+        commit_count = fetch_commit_count(username, repo["name"], token)
+        pull_request_count = fetch_pull_request_count(username, repo["name"], token)
+        workflow_count = fetch_workflow_count(username, repo["name"], token)
+        repositories.append({
+            "Name": repo["name"],
+            "Language": repo["language"],
+            "Languages URL": repo["languages_url"],
+            "commit_count": commit_count,
+            "pull_request_count": pull_request_count,
+            "workflow_count": workflow_count,
+            "fork": repo["fork"]
+        })
+        logger.debug(f"Repo {repo['name']}: {commit_count} commits, {pull_request_count} PRs, {workflow_count} workflows")
+    return repositories
 
 def fetch_repository_languages(languages_url, token):
     logger.debug(f"Fetching languages for URL: {languages_url}")
@@ -233,14 +303,16 @@ def generate_report():
         return jsonify({"error": "min_salary must be less than max_salary"}), 400
 
     try:
-        if not resume_file_path.startswith('http'):
+        if not resume_file_path.startswith('https://res.cloudinary.com'):
             logger.error(f"Resume file path is not a valid Cloudinary URL: {resume_file_path}")
             return jsonify({"error": "Invalid resume file path"}), 400
 
-        resume_response = requests.get(resume_file_path)
+        # Fetch resume using public URL
+        logger.debug(f"Fetching resume from: {resume_file_path}")
+        resume_response = requests.get(resume_file_path, timeout=10)
         if resume_response.status_code != 200:
-            logger.error(f"Failed to fetch resume from {resume_file_path}")
-            return jsonify({"error": "Failed to fetch resume"}), 400
+            logger.error(f"Failed to fetch resume from {resume_file_path}: Status {resume_response.status_code}")
+            return jsonify({"error": "Failed to fetch resume", "details": f"Status {resume_response.status_code}"}), 400
 
         resume_text = extract_pdf_text_and_links(BytesIO(resume_response.content))
         if not resume_text:
@@ -257,10 +329,11 @@ def generate_report():
         languages_analysis = analyze_languages(repositories, token)
         summary_stats = {
             "total_repositories": len(repositories),
-            "total_commits": sum(repo.get("commit_count", 0) for repo in repositories if "commit_count" in repo) or 0,
-            "total_pull_requests": sum(repo.get("pull_request_count", 0) for repo in repositories if "pull_request_count" in repo) or 0,
-            "total_workflows": sum(repo.get("workflow_count", 0) for repo in repositories if "workflow_count" in repo) or 0
+            "total_commits": sum(repo.get("commit_count", 0) for repo in repositories),
+            "total_pull_requests": sum(repo.get("pull_request_count", 0) for repo in repositories),
+            "total_workflows": sum(repo.get("workflow_count", 0) for repo in repositories)
         }
+        logger.debug(f"Summary stats: {summary_stats}")
         all_repos_skills = {repo["Language"]: sum(1 for r in repositories if r["Language"] == repo["Language"]) for repo in repositories if repo["Language"]}
         user_owned_repos = [repo for repo in repositories if not repo.get("fork", False)]
         user_owned_repos_skills = {repo["Language"]: sum(1 for r in user_owned_repos if r["Language"] == repo["Language"]) for repo in user_owned_repos if repo["Language"]}
@@ -334,12 +407,23 @@ def generate_report():
         pdf.cell(0, 8, f"Suggested Salary: {offered_salary:.2f} LPA", ln=1)
         pdf.cell(0, 8, f"Overall Rating: {overall_rating:.2f}/10", ln=1)
 
-        pdf_buffer = BytesIO()
-        pdf.output(pdf_buffer)
-        pdf_buffer.seek(0)
+        # Save PDF to a temporary file
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
+            pdf.output(temp_file.name)
+            temp_file_path = temp_file.name
+
+        # Upload the temporary file to Cloudinary
         report_filename = f"report_{github_id}_{uuid.uuid4().hex[:8]}"
-        result = upload(pdf_buffer, folder='reports', public_id=report_filename, resource_type='raw')
+        result = upload(
+            temp_file_path,
+            folder='reports',
+            public_id=report_filename,
+            resource_type='raw'
+        )
         report_url = result['secure_url']
+
+        # Clean up the temporary file
+        os.unlink(temp_file_path)
 
         response = jsonify({"filePath": report_url})
         response.headers['X-Report-FilePath'] = report_url
@@ -375,7 +459,7 @@ def upload_resume():
             file_content,
             folder='resumes',
             public_id=f"resume_{uuid.uuid4().hex[:8]}",
-            resource_type='auto',
+            resource_type='raw',
             access_mode='public',
             upload_preset='flask_public_upload'
         )
@@ -389,23 +473,21 @@ def upload_resume():
             try:
                 api.update(
                     public_id,
-                    resource_type='image',
+                    resource_type='raw',
                     access_mode='public'
                 )
                 logger.debug(f"Updated {public_id} to access_mode: public")
             except Exception as e:
                 logger.error(f"Failed to update access_mode for {public_id}: {str(e)}")
-    except Exception as e:
-        logger.error(f"Cloudinary upload failed: {str(e)}")
-        if "Upload preset not found" in str(e):
-            return jsonify({
-                "error": "Cloudinary configuration error",
-                "details": "Upload preset 'flask_public_upload' not found. Please create it in Cloudinary."
-            }), 500
-        return jsonify({"error": "Failed to upload resume to Cloudinary", "details": str(e)}), 500
+                return jsonify({"error": "Failed to set public access for resume", "details": str(e)}), 500
 
-    try:
-        resume_text = analyzer.extract_text_from_pdf(BytesIO(file_content))
+        # Verify file accessibility
+        verify_response = requests.get(file_url, timeout=10)
+        if verify_response.status_code != 200:
+            logger.error(f"Uploaded file is not publicly accessible: {file_url}, Status: {verify_response.status_code}")
+            return jsonify({"error": "Uploaded file is not publicly accessible", "details": f"Status {verify_response.status_code}"}), 500
+
+        resume_text = analyzersoever extract_text_from_pdf(BytesIO(file_content))
         if not resume_text:
             logger.error("Failed to extract text from PDF")
             return jsonify({"error": "Failed to extract text from PDF"}), 400
@@ -415,8 +497,13 @@ def upload_resume():
 
         return jsonify({"filePath": file_url, **analysis_result})
     except Exception as e:
-        logger.error(f"Error processing resume: {str(e)}")
-        return jsonify({"error": "Error processing resume", "details": str(e)}), 500
+        logger.error(f"Cloudinary upload failed: {str(e)}")
+        if "Upload preset not found" in str(e):
+            return jsonify({
+                "error": "Cloudinary configuration error",
+                "details": "Upload preset 'flask_public_upload' not found. Please create it in Cloudinary."
+            }), 500
+        return jsonify({"error": "Failed to upload resume to Cloudinary", "details": str(e)}), 500
 
 @app.route('/recommend-jobs', methods=['POST'])
 def recommend_jobs():
