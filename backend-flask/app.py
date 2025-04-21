@@ -110,7 +110,14 @@ def fetch_commit_count(username, repo_name, token):
                 token,
                 params={"per_page": 100, "page": page}
             )
-            commit_count += len(commits)
+            # Filter commits by the user's GitHub ID
+            for commit in commits:
+                author = commit.get("author")
+                if author and author.get("login") == username:
+                    commit_count += 1
+                # Fallback: check commit.author.name if author is None
+                elif not author and commit.get("commit", {}).get("author", {}).get("name") == username:
+                    commit_count += 1
             if len(commits) < 100:  # No more commits to fetch
                 break
             page += 1
@@ -118,6 +125,7 @@ def fetch_commit_count(username, repo_name, token):
         except Exception as e:
             logger.error(f"Error fetching commits for repo {repo_name}: {e}")
             break
+    logger.debug(f"User {username} made {commit_count} commits in repo {repo_name}")
     return commit_count
 
 def fetch_pull_request_count(username, repo_name, token):
@@ -130,7 +138,10 @@ def fetch_pull_request_count(username, repo_name, token):
                 token,
                 params={"state": "all", "per_page": 100, "page": page}
             )
-            pull_request_count += len(pulls)
+            # Filter pull requests by the user's GitHub ID
+            for pr in pulls:
+                if pr.get("user", {}).get("login") == username:
+                    pull_request_count += 1
             if len(pulls) < 100:  # No more pull requests to fetch
                 break
             page += 1
@@ -138,6 +149,7 @@ def fetch_pull_request_count(username, repo_name, token):
         except Exception as e:
             logger.error(f"Error fetching pull requests for repo {repo_name}: {e}")
             break
+    logger.debug(f"User {username} made {pull_request_count} pull requests in repo {repo_name}")
     return pull_request_count
 
 def fetch_workflow_count(username, repo_name, token):
@@ -169,7 +181,7 @@ def fetch_user_repositories(username, token):
             "workflow_count": workflow_count,
             "fork": repo["fork"]
         })
-        logger.debug(f"Repo {repo['name']}: {commit_count} commits, {pull_request_count} PRs, {workflow_count} workflows")
+        logger.debug(f"Repo {repo['name']}: {commit_count} commits, {pull_request_count} PRs, {workflow_count} workflows by {username}")
     return repositories
 
 def fetch_repository_languages(languages_url, token):
@@ -333,7 +345,7 @@ def generate_report():
             "total_pull_requests": sum(repo.get("pull_request_count", 0) for repo in repositories),
             "total_workflows": sum(repo.get("workflow_count", 0) for repo in repositories)
         }
-        logger.debug(f"Summary stats: {summary_stats}")
+        logger.debug(f"Summary stats for {github_id}: {summary_stats}")
         all_repos_skills = {repo["Language"]: sum(1 for r in repositories if r["Language"] == repo["Language"]) for repo in repositories if repo["Language"]}
         user_owned_repos = [repo for repo in repositories if not repo.get("fork", False)]
         user_owned_repos_skills = {repo["Language"]: sum(1 for r in user_owned_repos if r["Language"] == repo["Language"]) for repo in user_owned_repos if repo["Language"]}
@@ -411,19 +423,44 @@ def generate_report():
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_file:
             pdf.output(temp_file.name)
             temp_file_path = temp_file.name
+            temp_file_size = os.path.getsize(temp_file_path)
+            logger.debug(f"Temporary PDF created at {temp_file_path}, size: {temp_file_size} bytes")
+
+        # Verify the temporary PDF is not empty
+        if temp_file_size == 0:
+            logger.error("Generated PDF is empty")
+            os.unlink(temp_file_path)
+            return jsonify({"error": "Failed to generate PDF: empty file"}), 500
 
         # Upload the temporary file to Cloudinary
         report_filename = f"report_{github_id}_{uuid.uuid4().hex[:8]}"
-        result = upload(
-            temp_file_path,
-            folder='reports',
-            public_id=report_filename,
-            resource_type='raw'
-        )
-        report_url = result['secure_url']
+        try:
+            result = upload(
+                temp_file_path,
+                folder='reports',
+                public_id=report_filename,
+                resource_type='raw',
+                access_mode='public'
+            )
+            report_url = result['secure_url']
+            logger.debug(f"PDF uploaded to Cloudinary: {report_url}, size: {result.get('bytes', 'unknown')} bytes")
+        except Exception as e:
+            logger.error(f"Cloudinary upload failed: {str(e)}")
+            os.unlink(temp_file_path)
+            return jsonify({"error": "Failed to upload PDF to Cloudinary", "details": str(e)}), 500
 
         # Clean up the temporary file
         os.unlink(temp_file_path)
+
+        # Verify the uploaded PDF is accessible
+        try:
+            pdf_response = requests.get(report_url, timeout=10)
+            if pdf_response.status_code != 200 or pdf_response.headers.get('Content-Type') != 'application/pdf':
+                logger.error(f"Uploaded PDF is not accessible or invalid: {report_url}, Status: {pdf_response.status_code}, Content-Type: {pdf_response.headers.get('Content-Type')}")
+                return jsonify({"error": "Uploaded PDF is not accessible or invalid", "details": f"Status {pdf_response.status_code}"}), 500
+        except Exception as e:
+            logger.error(f"Failed to verify uploaded PDF: {str(e)}")
+            return jsonify({"error": "Failed to verify uploaded PDF", "details": str(e)}), 500
 
         response = jsonify({"filePath": report_url})
         response.headers['X-Report-FilePath'] = report_url
