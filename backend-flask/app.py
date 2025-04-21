@@ -182,7 +182,7 @@ def fetch_user_repositories(username, token):
             "fork": repo["fork"]
         })
         logger.debug(f"Repo {repo['name']}: {commit_count} commits, {pull_request_count} PRs, {workflow_count} workflows by {username}")
-    return repositoriesRFC 1
+    return repositories
 def fetch_repository_languages(languages_url, token):
     logger.debug(f"Fetching languages for URL: {languages_url}")
     endpoint = languages_url.replace("https://api.github.com", "")
