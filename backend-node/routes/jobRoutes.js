@@ -106,7 +106,7 @@ router.get('/api/jobs/:id/matches', authMiddleware, async (req, res) => {
             email: student.email,
             department: student.department,
             year: student.year,
-            resume_url: `http://localhost:3000/${student.resumeFilePath}`,
+            resume_url: `${student.resumeFilePath}`,
             skills: student.skills || [],
             created_at: student.created_at
           },
