@@ -182,8 +182,7 @@ def fetch_user_repositories(username, token):
             "fork": repo["fork"]
         })
         logger.debug(f"Repo {repo['name']}: {commit_count} commits, {pull_request_count} PRs, {workflow_count} workflows by {username}")
-    return repositories
-
+    return repositoriesRFC 1
 def fetch_repository_languages(languages_url, token):
     logger.debug(f"Fetching languages for URL: {languages_url}")
     endpoint = languages_url.replace("https://api.github.com", "")
@@ -462,19 +461,10 @@ def generate_report():
             logger.error(f"Failed to verify uploaded PDF: {str(e)}")
             return jsonify({"error": "Failed to verify uploaded PDF", "details": str(e)}), 500
 
-        # Generate a Cloudinary URL with download disposition
-        download_url = cloudinary_url(
-            f"reports/{report_filename}",
-            resource_type='raw',
-            attachment=True,
-            filename=f"report_{github_id}.pdf"
-        )[0]
-        logger.debug(f"Generated download URL: {download_url}")
-
-        response = jsonify({"filePath": download_url})
-        response.headers['X-Report-FilePath'] = download_url
+        response = jsonify({"filePath": report_url})
+        response.headers['X-Report-FilePath'] = report_url
         response.headers['Content-Disposition'] = f'attachment; filename="report_{github_id}.pdf"'
-        logger.debug(f"Set X-Report-FilePath header: {download_url}")
+        logger.debug(f"Set X-Report-FilePath header: {report_url}")
         return response
     except Exception as e:
         logger.error(f"Error in generate_report: {str(e)}")
