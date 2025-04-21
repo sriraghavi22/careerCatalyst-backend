@@ -462,9 +462,19 @@ def generate_report():
             logger.error(f"Failed to verify uploaded PDF: {str(e)}")
             return jsonify({"error": "Failed to verify uploaded PDF", "details": str(e)}), 500
 
-        response = jsonify({"filePath": report_url})
-        response.headers['X-Report-FilePath'] = report_url
-        logger.debug(f"Set X-Report-FilePath header: {report_url}")
+        # Generate a Cloudinary URL with download disposition
+        download_url = cloudinary_url(
+            f"reports/{report_filename}",
+            resource_type='raw',
+            attachment=True,
+            filename=f"report_{github_id}.pdf"
+        )[0]
+        logger.debug(f"Generated download URL: {download_url}")
+
+        response = jsonify({"filePath": download_url})
+        response.headers['X-Report-FilePath'] = download_url
+        response.headers['Content-Disposition'] = f'attachment; filename="report_{github_id}.pdf"'
+        logger.debug(f"Set X-Report-FilePath header: {download_url}")
         return response
     except Exception as e:
         logger.error(f"Error in generate_report: {str(e)}")
@@ -502,7 +512,7 @@ def upload_resume():
         )
         file_url = result['secure_url']
         public_id = result.get('public_id')
-        access_mode = result.get('access_mode', 'unknown')
+        access_mode = result.get('public_id', 'unknown')
         logger.debug(f"Resume uploaded to Cloudinary: {file_url}, public_id: {public_id}, access_mode: {access_mode}")
 
         if access_mode != 'public':
